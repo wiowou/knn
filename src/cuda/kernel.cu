@@ -11,13 +11,11 @@ template <typename T>
 struct Device
 {
   T *pts;
-  T *dimDelt2s; // (pt_i_dim_d - pt_j_dim_d)**2
-  T *dimDelt2Sums; //sum of dimDelt2s across the ndim dimensions
+  T *dist2s; //distance squared sums
   T *dists;
   int* indexes;
-  void *tmp; //used by cub::min
-  cub::KeyValuePair<int, T> *indexDist;
-  T *dist;
+  cub::KeyValuePair<int, T> *indexDist; //cub::ArgMin output
+  void *tmp; //cub::ArgMin storage
 };
 // host data
 struct Host
@@ -36,35 +34,26 @@ void allocate_device_storage( Host *h, Device<T> *d )
   size_t bytes = sizeof(T) * h->npt * h->ndim;
   cudaError_t err = cudaMalloc( &d->pts, bytes );
   bytes = sizeof(T) * h->npt;
-  err = cudaMalloc( &d->dimDelt2s, bytes );
-  err = cudaMalloc( &d->dimDelt2Sums, bytes );
+  err = cudaMalloc( &d->dist2s, bytes );
   d->tmp = NULL;
-  if (h->findDistances && !h->findIndexes)
+  if (h->findDistances)
   {
     bytes = sizeof(T) * h->npt * h->k;
     err = cudaMalloc( &d->dists, bytes );
-      bytes = sizeof(T);
-      err = cudaMalloc( &d->dist, bytes );
-      cub::DeviceReduce::Min( 
-        d->tmp, 
-        h->cubTmpSize, 
-        d->dists, 
-        d->dist,
-        h->npt );
   }
-  else
+  if (h->findIndexes)
   {
     bytes = sizeof(int) * h->npt * h->k;
     err = cudaMalloc( &d->indexes, bytes);
-    bytes = sizeof(cub::KeyValuePair<int, T>);
-    err = cudaMalloc( &d->indexDist, bytes );
-    cub::DeviceReduce::ArgMin( 
-      d->tmp, 
-      h->cubTmpSize, 
-      d->dists, 
-      d->indexDist,
-      h->npt );
   }
+  bytes = sizeof(cub::KeyValuePair<int, T>);
+  err = cudaMalloc( &d->indexDist, bytes );
+  cub::DeviceReduce::ArgMin( 
+    d->tmp, 
+    h->cubTmpSize, 
+    d->dists, 
+    d->indexDist,
+    h->npt );
   return;
 }
 
@@ -72,56 +61,48 @@ template <typename T>
 void free_device_storage( Device<T> *d )
 {
   if (d->pts != NULL) cudaFree( d->pts );
-  if (d->dimDelt2s != NULL) cudaFree( d->dimDelt2s );
-  if (d->dimDelt2Sums != NULL) cudaFree( d->dimDelt2Sums );
+  if (d->dist2s != NULL) cudaFree( d->dist2s );
   if (d->dists != NULL) cudaFree( d->dists );
   if (d->indexes != NULL) cudaFree( d->indexes );
   if (d->tmp != NULL) cudaFree( d->tmp );
   if (d->indexDist != NULL) cudaFree( d->indexDist );
-  if (d->dist != NULL) cudaFree( d->dist );
   return;
 }
 
 template <typename T>
-void add_to_dimDelt2Sums( Host *h, Device<T> *d, const int ipt, const int idim )
+void calc_dist2s( Host *h, Device<T> *d, const int ctrPtIdx, const int idim )
 {
   dim3 bsize (BLOCK_DIMX,1,1);
   dim3 gsize (h->npt/bsize.x,1,1);
-  compute_dimDelt2s_kernel<<<gsize,bsize>>>(
-    d->dimDelt2s, 
-    d->dimDelt2Sums, 
-    ipt, 
-    idim );
+  gsize.x += h->npt % bsize.x;
+  if (idim == 0)
+  {
+    calc_dist2s_dim0_kernel<T><<<gsize,bsize>>>(
+      ctrPtIdx,
+      d->pts,
+      h->npt,
+      d->dist2s );
+  }
+  else
+  {
+    calc_dist2s_dimi_kernel<T><<<gsize,bsize>>>(
+      ctrPtIdx,
+      d->pts + idim*h->npt,
+      h->npt,
+      d->dist2s );
+  }
   return;
 }
 
 template <typename T>
-void find_ith_neighbor( Host *h, Device<T> *d, const int ipt, const int inn )
+void find_ith_neighbor( Host *h, Device<T> *d, const int ctrPtIdx, const int inn )
 {
-  if (h->findDistances  && !h->findIndexes)
-  {
-    cub::DeviceReduce::Min( 
-      d->tmp, 
-      h->cubTmpSize, 
-      d->dists, 
-      d->dist,
-      h->npt );
-  }
-  else
-  {
-    cub::DeviceReduce::ArgMin( 
-      d->tmp, 
-      h->cubTmpSize, 
-      d->dists, 
-      d->indexDist,
-      h->npt );
-  }
-
-  return;
-}
-
-void zero_dimDelt2Sums()
-{
+  cub::DeviceReduce::ArgMin( 
+    d->tmp, 
+    h->cubTmpSize, 
+    d->dists, 
+    d->indexDist,
+    h->npt );
   return;
 }
 
@@ -139,6 +120,7 @@ void knn_indexes(
   const float *const pts_in, 
   int *const indexes_out )
 {
+  //set host parameters
   knn::Host hostParams;
   hostParams.k = k;
   hostParams.ndim = ndim;
@@ -146,8 +128,29 @@ void knn_indexes(
   hostParams.cubTmpSize = 0;
   hostParams.findIndexes = true;
   hostParams.findDistances = false;
+  //allocate device storage
   knn::Device<float> deviceParams;
   knn::allocate_device_storage<float>( &hostParams, &deviceParams);
+  //copy data to device memory
+  size_t bytes = sizeof(float) * ndim * npt;
+  cudaError_t err = cudaMemcpy( 
+    deviceParams.pts, 
+    pts_in, 
+    bytes, 
+    cudaMemcpyHostToDevice );
+  //brutishly calculate nearest neighbors
+  for (int ctrPtIdx = 0; ctrPtIdx < npt; ++ctrPtIdx)
+  {
+    for (int idim = 0; idim < ndim; ++idim)
+    {
+      knn::calc_dist2s<float>( &hostParams, &deviceParams, ctrPtIdx, idim );
+    }
+    for (int inn = 0; inn < k; ++inn)
+    {
+      knn::find_ith_neighbor<float>( &hostParams, &deviceParams, ctrPtIdx, inn );
+    }
+  }
+  //free device storage
   knn::free_device_storage<float>( &deviceParams );
   return;
 }

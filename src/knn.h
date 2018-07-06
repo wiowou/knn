@@ -5,10 +5,10 @@ extern "C" {
    *   int ndim: number of dimensions in each point
    *   unsigned int npt: number of points
    *   float *pts_in: points in ndim dimensional Euclidian space, arranged in memory as
-   *     0dim_0,     1dim_0,     2dim_0     ... ndim_0,
-   *     0dim_1,     1dim_1,     2dim_1     ... ndim_1,
+   *     1dim_pt1,   1dim_pt2,   1dim_pt3   ... 1dim_ptn,
+   *     2dim_pt1,   2dim_pt2,   2dim_pt3   ... 2dim_ptn,
    *     ...
-   *     0dim_npt-1, 1dim_npt-1, 2dim_npt-1 ... ndim_npt-1
+   *     ndim_pt1,   ndim_pt2,   ndim_pt3   ... ndim_ptn,
    *   unsigned int* indexes_out: k x npt array of integers specifying each neighbor's index
    *     arranged from closest to furthest as. MEMORY ALLOCATED AND MANAGED BY USER!
    *     pt0_neighbor0 ... pt0_neighbork-1
