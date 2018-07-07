@@ -24,8 +24,6 @@ struct Host
   int ndim; //number of dimensions
   int npt; //number of points
   size_t cubTmpSize; //bytes of storage required by cub::min
-  bool findIndexes;
-  bool findDistances;
 };
 
 template <typename T>
@@ -35,25 +33,21 @@ void allocate_device_storage( Host *h, Device<T> *d )
   cudaError_t err = cudaMalloc( &d->pts, bytes );
   bytes = sizeof(T) * h->npt;
   err = cudaMalloc( &d->dist2s, bytes );
-  d->tmp = NULL;
-  if (h->findDistances)
-  {
-    bytes = sizeof(T) * h->npt * h->k;
-    err = cudaMalloc( &d->dists, bytes );
-  }
-  if (h->findIndexes)
-  {
-    bytes = sizeof(int) * h->npt * h->k;
-    err = cudaMalloc( &d->indexes, bytes);
-  }
+  bytes = sizeof(T) * h->npt * h->k;
+  err = cudaMalloc( &d->dists, bytes );
+  bytes = sizeof(int) * h->npt * h->k;
+  err = cudaMalloc( &d->indexes, bytes);
   bytes = sizeof(cub::KeyValuePair<int, T>);
   err = cudaMalloc( &d->indexDist, bytes );
+  d->tmp = NULL;
+  bytes = 0;
   cub::DeviceReduce::ArgMin( 
     d->tmp, 
-    h->cubTmpSize, 
+    bytes, 
     d->dists, 
     d->indexDist,
     h->npt );
+  err = cudaMalloc( &d->tmp, bytes );
   return;
 }
 
@@ -70,7 +64,11 @@ void free_device_storage( Device<T> *d )
 }
 
 template <typename T>
-void calc_dist2s( Host *h, Device<T> *d, const int ctrPtIdx, const int idim )
+void calc_dist2s( 
+  const Host *h, 
+  const int ctrPtIdx, 
+  const int idim, 
+  Device<T> *d )
 {
   dim3 bsize (BLOCK_DIMX,1,1);
   dim3 gsize (h->npt/bsize.x,1,1);
@@ -95,30 +93,39 @@ void calc_dist2s( Host *h, Device<T> *d, const int ctrPtIdx, const int idim )
 }
 
 template <typename T>
-void find_ith_neighbor( Host *h, Device<T> *d, const int ctrPtIdx, const int inn )
+void find_ith_neighbor( 
+  Host *h, 
+  const int ctrPtIdx, 
+  const int inn,
+  const T maxValue,
+  Device<T> *d )
 {
   cub::DeviceReduce::ArgMin( 
     d->tmp, 
     h->cubTmpSize, 
-    d->dists, 
+    d->dist2s, 
     d->indexDist,
     h->npt );
-  return;
-}
-
-void set_dist_to_max( const int ipt )
-{
+  //set distance of the ith n.n. to maxValue so next one can be found
+  //copy to device output arrays
+  copy_init_kernel<T><<<1,1>>>(
+    maxValue,
+    d->dist2s,
+    d->indexDist,
+    d->indexes + ctrPtIdx*h->k + inn,
+    d->dists + ctrPtIdx*h->k + inn );
   return;
 }
 
 } /*namespace knn*/
 
-void knn_indexes( 
+void knn_gpu( 
   const int k, 
   const int ndim, 
   const int npt, 
   const float *const pts_in, 
-  int *const indexes_out )
+  int *const indexes_out,
+  float *const dists_out )
 {
   //set host parameters
   knn::Host hostParams;
@@ -126,8 +133,6 @@ void knn_indexes(
   hostParams.ndim = ndim;
   hostParams.npt = npt;
   hostParams.cubTmpSize = 0;
-  hostParams.findIndexes = true;
-  hostParams.findDistances = false;
   //allocate device storage
   knn::Device<float> deviceParams;
   knn::allocate_device_storage<float>( &hostParams, &deviceParams);
@@ -143,13 +148,42 @@ void knn_indexes(
   {
     for (int idim = 0; idim < ndim; ++idim)
     {
-      knn::calc_dist2s<float>( &hostParams, &deviceParams, ctrPtIdx, idim );
+      knn::calc_dist2s<float>( 
+        &hostParams, 
+        ctrPtIdx, 
+        idim, 
+        &deviceParams ); 
     }
+    const float maxValue = std::numeric_limits<float>::max();
+    //distance to itself will be min if not set to maxValue
+    err = cudaMemcpy( 
+      deviceParams.dist2s+ctrPtIdx, 
+      &maxValue, 
+      sizeof(float), 
+      cudaMemcpyHostToDevice );
     for (int inn = 0; inn < k; ++inn)
     {
-      knn::find_ith_neighbor<float>( &hostParams, &deviceParams, ctrPtIdx, inn );
+      knn::find_ith_neighbor<float>( 
+        &hostParams, 
+        ctrPtIdx, 
+        inn,
+        maxValue,
+        &deviceParams ); 
     }
   }
+  //copy data back to host memory
+  bytes = sizeof(int) * npt * k;
+  err = cudaMemcpy(
+    indexes_out,
+    deviceParams.indexes,
+    bytes,
+    cudaMemcpyDeviceToHost );
+  bytes = sizeof(float) * npt * k;
+  err = cudaMemcpy(
+    dists_out,
+    deviceParams.dists,
+    bytes,
+    cudaMemcpyDeviceToHost );
   //free device storage
   knn::free_device_storage<float>( &deviceParams );
   return;

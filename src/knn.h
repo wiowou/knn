@@ -29,14 +29,14 @@ extern "C" {
     const int ndim, 
     const int npt, 
     const float *const pts_in, 
-    const float *const dists_out );
+    float *const dists_out );
 
-  void knn_indexes_dists( 
+  void knn_gpu( 
     const int k, 
     const int ndim, 
     const int npt, 
     const float *const pts_in, 
-    const int *const indexes_out, 
-    const float *const dists_out );
+    int *const indexes_out, 
+    float *const dists_out );
 
 }
