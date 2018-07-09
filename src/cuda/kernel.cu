@@ -12,7 +12,7 @@ struct Device
 {
   T *pts;
   T *dist2s; //distance squared sums
-  T *dists;
+  float *dists;
   int* indexes;
   cub::KeyValuePair<int, T> *indexDist; //cub::ArgMin output
   void *tmp; //cub::ArgMin storage
@@ -23,31 +23,31 @@ struct Host
   int k; //number of nearest neighbors
   int ndim; //number of dimensions
   int npt; //number of points
-  size_t cubTmpSize; //bytes of storage required by cub::min
+  size_t cubTmpSize; //nbytes of storage required by cub::min
 };
 
 template <typename T>
 void allocate_device_storage( Host *h, Device<T> *d )
 {
-  size_t bytes = sizeof(T) * h->npt * h->ndim;
-  cudaError_t err = cudaMalloc( &d->pts, bytes );
-  bytes = sizeof(T) * h->npt;
-  err = cudaMalloc( &d->dist2s, bytes );
-  bytes = sizeof(T) * h->npt * h->k;
-  err = cudaMalloc( &d->dists, bytes );
-  bytes = sizeof(int) * h->npt * h->k;
-  err = cudaMalloc( &d->indexes, bytes);
-  bytes = sizeof(cub::KeyValuePair<int, T>);
-  err = cudaMalloc( &d->indexDist, bytes );
+  size_t nbytes = sizeof(T) * h->npt * h->ndim;
+  cudaError_t err = cudaMalloc( &d->pts, nbytes );
+  nbytes = sizeof(T) * h->npt;
+  err = cudaMalloc( &d->dist2s, nbytes );
+  nbytes = sizeof(float) * h->npt * h->k;
+  err = cudaMalloc( &d->dists, nbytes );
+  nbytes = sizeof(int) * h->npt * h->k;
+  err = cudaMalloc( &d->indexes, nbytes);
+  nbytes = sizeof(cub::KeyValuePair<int, T>);
+  err = cudaMalloc( &d->indexDist, nbytes );
   d->tmp = NULL;
-  bytes = 0;
+  nbytes = 0;
   cub::DeviceReduce::ArgMin( 
     d->tmp, 
-    bytes, 
-    d->dists, 
+    nbytes, 
+    d->dist2s, 
     d->indexDist,
     h->npt );
-  err = cudaMalloc( &d->tmp, bytes );
+  err = cudaMalloc( &d->tmp, nbytes );
   return;
 }
 
@@ -97,9 +97,18 @@ void find_ith_neighbor(
   Host *h, 
   const int ctrPtIdx, 
   const int inn,
-  const T maxValue,
   Device<T> *d )
 {
+  const T maxValue = std::numeric_limits<T>::max();
+  //don't want self as nearest nbor. Set distance to self to maxValue
+  if (inn == 0)
+  {
+    cudaError_t err = cudaMemcpy( 
+      d->dist2s+ctrPtIdx, 
+      &maxValue, 
+      sizeof(T), 
+      cudaMemcpyHostToDevice );
+  }
   cub::DeviceReduce::ArgMin( 
     d->tmp, 
     h->cubTmpSize, 
@@ -117,13 +126,12 @@ void find_ith_neighbor(
   return;
 }
 
-} /*namespace knn*/
-
-void knn_gpu( 
+template <typename T>
+void knn( 
   const int k, 
   const int ndim, 
   const int npt, 
-  const float *const pts_in, 
+  const T *const pts_in, 
   int *const indexes_out,
   float *const dists_out )
 {
@@ -134,58 +142,75 @@ void knn_gpu(
   hostParams.npt = npt;
   hostParams.cubTmpSize = 0;
   //allocate device storage
-  knn::Device<float> deviceParams;
-  knn::allocate_device_storage<float>( &hostParams, &deviceParams);
-  //copy data to device memory
-  size_t bytes = sizeof(float) * ndim * npt;
+  knn::Device<T> deviceParams;
+  knn::allocate_device_storage<T>( &hostParams, &deviceParams);
+  //copy input data to device memory
+  size_t nbytes = sizeof(T) * ndim * npt;
   cudaError_t err = cudaMemcpy( 
     deviceParams.pts, 
     pts_in, 
-    bytes, 
+    nbytes, 
     cudaMemcpyHostToDevice );
   //brutishly calculate nearest neighbors
   for (int ctrPtIdx = 0; ctrPtIdx < npt; ++ctrPtIdx)
   {
     for (int idim = 0; idim < ndim; ++idim)
     {
-      knn::calc_dist2s<float>( 
+      knn::calc_dist2s<T>( 
         &hostParams, 
         ctrPtIdx, 
         idim, 
         &deviceParams ); 
     }
-    const float maxValue = std::numeric_limits<float>::max();
-    //distance to itself will be min if not set to maxValue
-    err = cudaMemcpy( 
-      deviceParams.dist2s+ctrPtIdx, 
-      &maxValue, 
-      sizeof(float), 
-      cudaMemcpyHostToDevice );
     for (int inn = 0; inn < k; ++inn)
     {
-      knn::find_ith_neighbor<float>( 
+      knn::find_ith_neighbor<T>( 
         &hostParams, 
         ctrPtIdx, 
         inn,
-        maxValue,
         &deviceParams ); 
     }
   }
-  //copy data back to host memory
-  bytes = sizeof(int) * npt * k;
+  //copy result data to host memory
+  nbytes = sizeof(int) * npt * k;
   err = cudaMemcpy(
     indexes_out,
     deviceParams.indexes,
-    bytes,
+    nbytes,
     cudaMemcpyDeviceToHost );
-  bytes = sizeof(float) * npt * k;
+  nbytes = sizeof(float) * npt * k;
   err = cudaMemcpy(
     dists_out,
     deviceParams.dists,
-    bytes,
+    nbytes,
     cudaMemcpyDeviceToHost );
   //free device storage
-  knn::free_device_storage<float>( &deviceParams );
+  knn::free_device_storage<T>( &deviceParams );
   return;
 }
 
+} /*namespace knn*/
+
+void knn_float( 
+  const int k, 
+  const int ndim, 
+  const int npt, 
+  const float *const pts_in, 
+  int *const indexes_out,
+  float *const dists_out )
+{
+  knn::knn<float>( k, ndim, npt, pts_in, indexes_out, dists_out );
+  return;
+}
+
+void knn_double( 
+  const int k, 
+  const int ndim, 
+  const int npt, 
+  const double *const pts_in, 
+  int *const indexes_out,
+  float *const dists_out )
+{
+  knn::knn<double>( k, ndim, npt, pts_in, indexes_out, dists_out );
+  return;
+}

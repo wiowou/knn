@@ -40,7 +40,7 @@ copy_init_kernel(
   T* __restrict__ const dist2, 
   const cub::KeyValuePair<int,T>* __restrict__ const indexDist,
   int* __restrict__ const index, //indexed from point start + inn
-  T* __restrict__ const dist ) //indexed from point start + inn
+  float* __restrict__ const dist ) //indexed from point start + inn
 {
   const int minIndex = indexDist->key;
   dist2[minIndex] = maxValue;

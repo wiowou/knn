@@ -1,16 +1,16 @@
-CCnve = nvcc
-OPnve = -g -G -DMYDEBUG
+CCnvs = nvcc
+OPnvs = --compiler-options '-fPIC' -g -G -DMYDEBUG
 
 
-all : knn 
+all : libknn.so 
 
-knn : ../debug/knn
-../debug/knn : cuda/kernel.cuh cuda/kernel.cu main.cpp 
-	${CCnve} ${OPnve} -Icuda      cuda/kernel.cu main.cpp -o ../debug/knn
+libknn.so : ../debug/libknn.so
+../debug/libknn.so : cuda/kernel.cuh cuda/kernel.cu 
+	${CCnvs} --shared ${OPnvs} -Icuda cuda/kernel.cu -o ../debug/libknn.so
 
 
 clean : 
-	rm -f ../debug/knn
+	rm -f ../debug/libknn.so
 
 cleanall : clean
 	rm -rf ob

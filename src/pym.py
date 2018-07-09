@@ -7,7 +7,7 @@ import os
 if __name__ == '__main__':
     targetName='knn'
     debug=True
-    binType='exe'
+    binType='lib'
     
     binOutputDir='../bin'
     if debug:

@@ -1,0 +1,4 @@
+#!/bin/bash
+
+export PYTHONPATH=/home/bk/src/knn/pysrc
+#cuda-gdb --args python2 frameTest.py

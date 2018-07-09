@@ -17,21 +17,7 @@ extern "C" {
    *   float *dists_out: k x npt array of floats specifying distances to each neighbor.
    *     MEMORY ALLOCATED AND MANAGED BY USER!
    */
-  void knn_indexes( 
-    const int k, 
-    const int ndim, 
-    const int npt, 
-    const float *const pts_in, 
-    int *const indexes_out );
-  
-  void knn_dists( 
-    const int k, 
-    const int ndim, 
-    const int npt, 
-    const float *const pts_in, 
-    float *const dists_out );
-
-  void knn_gpu( 
+  void knn_float( 
     const int k, 
     const int ndim, 
     const int npt, 
@@ -39,4 +25,11 @@ extern "C" {
     int *const indexes_out, 
     float *const dists_out );
 
+  void knn_double( 
+    const int k, 
+    const int ndim, 
+    const int npt, 
+    const double *const pts_in, 
+    int *const indexes_out, 
+    float *const dists_out );
 }
