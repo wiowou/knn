@@ -6,7 +6,7 @@ def knn(k, pts, libLocation=None):
         lib = ctypes.CDLL(libLocation)
     else:
         lib = ctypes.CDLL('libknn.so')
-    npt,ndim = np.shape(pts)
+    ndim,npt = np.shape(pts)
     indexes = np.empty(shape=[npt,k], dtype=np.int32, order='C')
     dists = np.empty(shape=[npt,k], dtype=np.float32, order='C')
     cindexes = indexes.ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
